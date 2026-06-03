@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+# Runtime state lives in $JARVIS_HOME (~/.jarvis by default), not the repo,
+# but ignore a local ./data dir too in case JARVIS_HOME is pointed here.
+/data/

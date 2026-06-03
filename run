@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Convenience launcher: runs Jarvis using the project virtualenv.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$here/.venv/bin/python" -m jarvis "$@"

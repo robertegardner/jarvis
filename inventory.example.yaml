@@ -1,0 +1,23 @@
+# Jarvis server inventory.
+# Each server is reachable over SSH using your existing keys (~/.ssh).
+# posture: strict | normal | trusted   (see README for what each means)
+servers:
+  nas:
+    host: 192.168.1.10
+    user: admin
+    port: 22
+    identity_file: ~/.ssh/id_ed25519
+    posture: strict
+    description: "Synology NAS - media library and nightly backups. Be careful."
+
+  dockerhost:
+    host: 192.168.1.20
+    user: rgardner
+    posture: normal
+    description: "Ubuntu box running the Docker compose stack."
+
+  pi-lab:
+    host: 192.168.1.30
+    user: pi
+    posture: trusted
+    description: "Throwaway Raspberry Pi for experiments - looser gating is fine."
