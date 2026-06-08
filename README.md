@@ -10,7 +10,8 @@ so it reuses your existing Claude Code authentication (no separate API key).
 
 ## How it thinks about safety
 
-Every action goes through one gate (`can_use_tool` in `jarvis/agent.py`):
+Every action goes through one gate (`jarvis/gate.py`), shared by both the
+terminal REPL and the web GUI so neither can be laxer than the other:
 
 | Command kind | What happens |
 |---|---|
@@ -87,6 +88,35 @@ you> check for package updates on all servers, summarize, don't install anything
 you> restart the nginx container on dockerhost
 ```
 
+## Web GUI
+
+A browser UI (chat + approvals, plus inventory/permissions/memory/journal
+management) that's reachable from your phone on the same network. The agent and
+its safety gate are identical to the REPL — approvals just show up as cards
+instead of a terminal prompt.
+
+```bash
+# one-time: build the front-end (Node 18+)
+cd frontend && npm install && npm run build && cd ..
+
+# serve it (binds 0.0.0.0:8765 by default, so your LAN can reach it)
+./run web                          # prints the URL and an access token
+./run web --host 127.0.0.1 --port 9000   # localhost only / custom port
+```
+
+On startup it prints a **token** (also stored at `~/.jarvis/web_token`). Open the
+URL, paste the token once, and you're in. The token is required for every request
+and the WebSocket handshake.
+
+> **Security:** the token rides over plain HTTP, which is fine on a trusted home
+> network but not over the open internet. To reach it remotely, prefer an SSH
+> tunnel (`ssh -L 8765:localhost:8765 user@host`) or put it behind a TLS reverse
+> proxy rather than exposing the port directly.
+
+For front-end development with hot reload, run the backend (`./run web`) and, in
+another terminal, `cd frontend && npm run dev` — Vite proxies `/api` and `/ws` to
+the backend on `:8765`.
+
 ## Layout
 
 ```
@@ -97,9 +127,12 @@ jarvis/
   memory.py      server facts + task journal
   sshexec.py     runs commands via system ssh
   tools.py       the MCP tools the agent calls (list_servers, ssh_run, remember, recall)
-  agent.py       permission gate, system prompt, REPL
+  gate.py        the shared safety gate (pre_decision / apply_choice / make_gate)
+  agent.py       system prompt, terminal prompter, REPL
+  web/           FastAPI backend: agent WebSocket + JSON management API
   __main__.py    entrypoint
-tests_smoke.py   offline classifier/permission checks
+frontend/        React + Vite single-page app (built to frontend/dist)
+tests_smoke.py   offline classifier/permission/gate checks
 ```
 
 ## Roadmap (toward learned automation)

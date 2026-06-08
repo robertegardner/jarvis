@@ -1,6 +1,10 @@
 .venv/
 __pycache__/
 *.pyc
+# Frontend build artifacts and deps (rebuild with: cd frontend && npm install && npm run build)
+/frontend/node_modules/
+/frontend/dist/
+/frontend/*.tsbuildinfo
 # Runtime state lives in $JARVIS_HOME (~/.jarvis by default), not the repo,
 # but ignore a local ./data dir too in case JARVIS_HOME is pointed here.
 /data/

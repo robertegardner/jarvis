@@ -98,6 +98,27 @@ def load_inventory(paths: Paths) -> Inventory:
     return Inventory(servers=servers)
 
 
+def save_inventory(paths: Paths, inventory: Inventory) -> None:
+    """Write the inventory back to inventory.yaml (used by the web management UI).
+
+    Round-trips through the same `servers:` shape load_inventory reads. Postures
+    are validated on the way back in by load_inventory, so an invalid one here
+    degrades to 'normal' rather than corrupting the gate.
+    """
+    paths.ensure()
+    data = {"servers": {}}
+    for name in inventory.names():
+        s = inventory.servers[name]
+        spec: dict = {"host": s.host, "user": s.user, "port": s.port}
+        if s.identity_file:
+            spec["identity_file"] = s.identity_file
+        spec["posture"] = s.posture if s.posture in POSTURES else "normal"
+        if s.description:
+            spec["description"] = s.description
+        data["servers"][name] = spec
+    paths.inventory.write_text(yaml.safe_dump(data, sort_keys=False))
+
+
 EXAMPLE_INVENTORY = """\
 # Jarvis server inventory.
 # Each server is reachable over SSH using your existing keys (~/.ssh).

@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 from . import sshexec
-from .config import Inventory
+from .config import Inventory, Paths, load_inventory
 from .memory import Memory
 from .permissions import PermissionStore
 
@@ -25,6 +25,20 @@ class AppContext:
     # can_use_tool records how each command was authorized so the tool
     # handler can record an accurate decision in the task journal.
     decisions: dict[str, str] = field(default_factory=dict)
+
+
+def build_context(paths: Paths) -> AppContext:
+    """Load inventory, memory, and permissions from disk into a fresh context.
+
+    A context is a snapshot: the agent's system prompt is built from it once per
+    session, so inventory/fact edits take effect on the next session, not mid-run.
+    """
+    paths.ensure()
+    return AppContext(
+        inventory=load_inventory(paths),
+        memory=Memory(paths),
+        permissions=PermissionStore.load(paths.permissions),
+    )
 
 
 def _text(s: str) -> dict:

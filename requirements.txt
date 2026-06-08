@@ -1,2 +1,4 @@
 claude-agent-sdk>=0.2.88
 PyYAML>=6.0
+fastapi>=0.110
+uvicorn[standard]>=0.29
