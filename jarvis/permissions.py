@@ -88,3 +88,15 @@ class PermissionStore:
         rule.created = rule.created or datetime.now(timezone.utc).isoformat(timespec="seconds")
         self.rules.append(rule)
         self.save()
+
+    def remove(self, index: int) -> Rule | None:
+        """Delete the rule at `index` (its position in `rules`) and persist.
+
+        Returns the removed rule, or None if the index is out of range. The web
+        UI lists rules in this order, so the index is a stable handle for a row.
+        """
+        if not 0 <= index < len(self.rules):
+            return None
+        removed = self.rules.pop(index)
+        self.save()
+        return removed

@@ -13,7 +13,12 @@ Remote: `git@github.com:robertegardner/jarvis.git` (private), default branch `ma
 
 ## Core design principle
 
-Safety lives in one place: the `can_use_tool` gate in `jarvis/agent.py`.
+Safety lives in one place: the gate in `jarvis/gate.py` (`pre_decision` decides
+allow/deny/prompt; `apply_choice` turns a y/n/b/e/g answer into an allow + saved
+rule; `make_gate` is the `can_use_tool` flow). Both frontends — the terminal REPL
+(`agent.py`) and the web backend (`web/session.py`) — build their gate from
+`make_gate` and supply only a *prompter* (how they ask the operator). Keep all
+classify/posture/rule-saving logic in `gate.py` so the two frontends can't drift.
 
 - **Read-only** commands auto-run.
 - **State-changing** commands are gated (prompt the operator).
@@ -28,19 +33,39 @@ Safety lives in one place: the `can_use_tool` gate in `jarvis/agent.py`.
 
 ```
 jarvis/
-  config.py      inventory + paths + trust postures (POSTURES tuple)
+  config.py      inventory + paths + trust postures (POSTURES tuple); save_inventory
   classify.py    read-only vs state-changing classifier (the safety filter)
   permissions.py saved-authority Rule matching (binary/prefix/exact, server-scoped)
   memory.py      per-server facts (markdown) + append-only task journal (jsonl)
   sshexec.py     runs commands via system `ssh` (BatchMode, key-only auth)
-  tools.py       in-process MCP tools: list_servers, ssh_run, remember, recall
-  agent.py       can_use_tool gate, system prompt, REPL, terminal UI
-  __main__.py    entrypoint / argparse
+  tools.py       in-process MCP tools (list_servers, ssh_run, remember, recall); build_context
+  gate.py        the shared safety gate: pre_decision / apply_choice / make_gate
+  agent.py       system prompt, terminal prompter, REPL; build_options(ctx, prompter)
+  web/           FastAPI backend (see below)
+  __main__.py    entrypoint / argparse (repl | -c | servers | web)
+frontend/        React + Vite SPA, built to frontend/dist and served by web/server.py
 ```
 
-Data flow: operator directive → SDK agent loop → agent calls `ssh_run` →
-`can_use_tool` classifies + gates → on allow, `sshexec.run` executes → result +
-authorization decision logged to the task journal.
+`jarvis/web/` (only imported when `jarvis web` runs, so the SDK/FastAPI deps stay
+lazy):
+
+```
+  auth.py        shared-token load/generate (~/.jarvis/web_token) + bearer check
+  approvals.py   ApprovalBroker: bridges the async gate to the browser via Futures
+  session.py     AgentSession (one per WS): reader queue + driver loop + web prompter
+  api.py         JSON management API (inventory, permissions, memory, tasks)
+  server.py      FastAPI app: REST + /ws + serves the built SPA; serve() runs uvicorn
+```
+
+Data flow (both frontends): operator directive → SDK agent loop → agent calls
+`ssh_run` → `make_gate`'s `can_use_tool` runs `pre_decision`; a prompt is routed
+to the frontend's prompter (terminal `input()` or the web ApprovalBroker), which
+applies the answer via `apply_choice` → on allow, `sshexec.run` executes → result
++ authorization decision logged to the task journal.
+
+The web backend builds a fresh `AppContext` per connection, so inventory/fact
+edits made through the API only affect a session after a reload (the UI exposes a
+"reload session" action that tears down and rebuilds the `AgentSession`).
 
 ## Runtime state (NOT in the repo)
 
@@ -55,7 +80,11 @@ The repo only ships `inventory.example.yaml`. Never commit anything from
 ./run                 # interactive REPL (uses .venv)
 ./run -c "..."        # one-shot directive
 ./run servers         # list inventory and exit
-.venv/bin/python tests_smoke.py   # offline classifier/permission checks
+./run web             # serve the web GUI (0.0.0.0:8765; prints an access token)
+.venv/bin/python tests_smoke.py   # offline classifier/permission/gate checks
+
+# web front-end (Node 18+): build once, then `./run web` serves frontend/dist
+cd frontend && npm install && npm run build      # or `npm run dev` for hot reload
 ```
 
 When changing `classify.py` or `permissions.py`, run `tests_smoke.py` and add

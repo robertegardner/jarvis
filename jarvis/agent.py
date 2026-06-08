@@ -14,18 +14,14 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
-    PermissionResultAllow,
-    PermissionResultDeny,
     ResultMessage,
     TextBlock,
     ToolUseBlock,
 )
 
-from . import classify
-from .config import Inventory, Paths
-from .memory import Memory
-from .permissions import PermissionStore, Rule
-from .tools import AppContext, build_tools
+from .config import Paths
+from .gate import PromptInfo, apply_choice, make_gate, normalize_choice
+from .tools import AppContext, build_context, build_tools
 
 # ---- terminal helpers ----------------------------------------------------
 DIM = "\033[2m"; BOLD = "\033[1m"; CYAN = "\033[36m"; YELLOW = "\033[33m"
@@ -42,106 +38,41 @@ async def _ainput(prompt: str = "") -> str:
 
 
 # ---- the permission gate -------------------------------------------------
-LOCAL_TOOLS = {
-    "mcp__jarvis__list_servers",
-    "mcp__jarvis__remember",
-    "mcp__jarvis__recall",
-}
-SSH_TOOL = "mcp__jarvis__ssh_run"
+# The gate logic itself lives in jarvis/gate.py so the web frontend shares it.
+# Here we supply only the terminal prompter: how the REPL asks the operator.
 
 
-def make_gate(ctx: AppContext):
-    async def can_use_tool(tool_name, tool_input, context):
-        # Local, side-effect-free tools never need approval.
-        if tool_name in LOCAL_TOOLS:
-            return PermissionResultAllow()
+async def _terminal_prompter(ctx: AppContext, info: PromptInfo) -> bool:
+    """Render an approval request to the terminal and read the operator's answer.
 
-        if tool_name != SSH_TOOL:
-            return PermissionResultDeny(
-                message="Jarvis only acts through its own SSH and memory tools."
-            )
-
-        server_name = tool_input.get("server", "")
-        command = tool_input.get("command", "")
-        purpose = tool_input.get("purpose", "")
-        server = ctx.inventory.get(server_name)
-        if server is None:
-            return PermissionResultDeny(message=f"Unknown server {server_name!r}.")
-
-        verdict = classify.classify(command)
-        key = f"{server_name}\x00{command}"
-
-        # Posture: trusted auto-runs writes; strict gates everything.
-        if server.posture != "strict":
-            if verdict.read_only:
-                ctx.decisions[key] = "auto-readonly"
-                return PermissionResultAllow()
-            if server.posture == "trusted":
-                ctx.decisions[key] = "auto-trusted"
-                return PermissionResultAllow()
-            rule = ctx.permissions.authorizes(server_name, command)
-            if rule is not None:
-                ctx.decisions[key] = f"rule:{rule.describe()}"
-                return PermissionResultAllow()
-
-        # Otherwise, ask the operator.
-        approved = await _prompt_operator(ctx, server_name, server.posture, command,
-                                          purpose, verdict)
-        if approved:
-            ctx.decisions[key] = "approved"
-            return PermissionResultAllow()
-
-        ctx.memory.log_task(server_name, command, read_only=verdict.read_only,
-                            decision="denied", exit_code=None, summary=purpose)
-        return PermissionResultDeny(
-            message="Operator declined this command. Do not retry it; ask what to do instead."
-        )
-
-    return can_use_tool
-
-
-async def _prompt_operator(ctx, server_name, posture, command, purpose, verdict) -> bool:
-    import shlex
-    try:
-        binary = shlex.split(command)[0].rsplit("/", 1)[-1]
-    except (ValueError, IndexError):
-        binary = command.split()[0] if command else "?"
-
+    Returns whether the command is approved, having applied the choice (and saved
+    any b/e/g rule) through the shared apply_choice in gate.py.
+    """
     print()
     print(_c("┌─ APPROVAL NEEDED", YELLOW)
-          + _c(f"  server: {server_name} ({posture})", DIM))
-    if purpose:
-        print(_c(f"│ purpose: {purpose}", DIM))
-    print(_c("│ reason:  ", DIM) + verdict.reason)
-    print("│ " + _c("command: ", BOLD) + _c(command, CYAN))
+          + _c(f"  server: {info.server} ({info.posture})", DIM))
+    if info.purpose:
+        print(_c(f"│ purpose: {info.purpose}", DIM))
+    print(_c("│ reason:  ", DIM) + info.reason)
+    print("│ " + _c("command: ", BOLD) + _c(info.command, CYAN))
     print(_c("└ [y] run once  [n] deny  "
-             f"[b] always `{binary}` on {server_name}  "
+             f"[b] always `{info.binary}` on {info.server}  "
              "[e] always this exact cmd  "
-             "[g] always `" + binary + "` on ALL servers", DIM))
+             "[g] always `" + info.binary + "` on ALL servers", DIM))
 
     while True:
-        choice = (await _ainput(_c("  approve> ", YELLOW))).strip().lower()
-        if choice in ("y", "yes"):
-            return True
-        if choice in ("n", "no", ""):
-            return False
+        choice = normalize_choice(await _ainput(_c("  approve> ", YELLOW)))
+        if choice is None:
+            print(_c("  please answer y / n / b / e / g", RED))
+            continue
+        approved = apply_choice(ctx, info, choice)
         if choice == "b":
-            ctx.permissions.add(Rule(server=server_name, match="binary",
-                                     value=binary, note=purpose))
-            print(_c(f"  saved: always allow `{binary}` on {server_name}", GREEN))
-            return True
-        if choice == "e":
-            ctx.permissions.add(Rule(server=server_name, match="exact",
-                                     value=command, note=purpose))
-            print(_c("  saved: always allow this exact command on "
-                     f"{server_name}", GREEN))
-            return True
-        if choice == "g":
-            ctx.permissions.add(Rule(server="*", match="binary",
-                                     value=binary, note=purpose))
-            print(_c(f"  saved: always allow `{binary}` on ALL servers", GREEN))
-            return True
-        print(_c("  please answer y / n / b / e / g", RED))
+            print(_c(f"  saved: always allow `{info.binary}` on {info.server}", GREEN))
+        elif choice == "e":
+            print(_c(f"  saved: always allow this exact command on {info.server}", GREEN))
+        elif choice == "g":
+            print(_c(f"  saved: always allow `{info.binary}` on ALL servers", GREEN))
+        return approved
 
 
 # ---- system prompt -------------------------------------------------------
@@ -180,13 +111,15 @@ a fix that worked), call remember so future sessions benefit.
 
 
 # ---- the REPL ------------------------------------------------------------
-def build_options(ctx: AppContext) -> ClaudeAgentOptions:
+def build_options(ctx: AppContext, prompter=_terminal_prompter) -> ClaudeAgentOptions:
+    """Assemble SDK options. The prompter decides how approvals are requested;
+    the terminal REPL uses _terminal_prompter, the web backend its own."""
     mcp_server, _tool_names = build_tools(ctx)
     return ClaudeAgentOptions(
         mcp_servers={"jarvis": mcp_server},
         system_prompt=build_system_prompt(ctx),
         permission_mode="default",
-        can_use_tool=make_gate(ctx),
+        can_use_tool=make_gate(ctx, prompter),
         # Jarvis must not touch the local machine; only its own tools are allowed.
         disallowed_tools=["Bash", "Read", "Write", "Edit", "NotebookEdit",
                           "WebFetch", "WebSearch", "Glob", "Grep", "Task"],
@@ -214,13 +147,8 @@ async def _print_turn(client: ClaudeSDKClient) -> None:
 
 async def run_repl(once: str | None = None) -> None:
     paths = Paths.resolve()
-    paths.ensure()
-    inventory = load(paths)
-    ctx = AppContext(
-        inventory=inventory,
-        memory=Memory(paths),
-        permissions=PermissionStore.load(paths.permissions),
-    )
+    ctx = build_context(paths)
+    inventory = ctx.inventory
     options = build_options(ctx)
 
     async with ClaudeSDKClient(options=options) as client:
@@ -244,8 +172,3 @@ async def run_repl(once: str | None = None) -> None:
                 break
             await client.query(line)
             await _print_turn(client)
-
-
-def load(paths: Paths) -> Inventory:
-    from .config import load_inventory
-    return load_inventory(paths)
